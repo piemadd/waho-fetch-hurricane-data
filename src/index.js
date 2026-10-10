@@ -49,7 +49,7 @@ const fetchKMZ = async (url) => {
     } else {
       // return the bytes
       // anything too large we likely don't need
-      if (item.buffer.length < 1_000) finalItems[item.name] = item.buffer.toBase64();
+      if (item.buffer.length < 10_000) finalItems[item.name] = item.buffer.toBase64();
       else {
         //console.log(item.name, item.buffer.length);
       }
