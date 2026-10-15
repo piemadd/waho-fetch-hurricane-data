@@ -3,27 +3,7 @@ import { kml } from "@tmcw/togeojson";
 import { DOMParser } from "@xmldom/xmldom";
 import unzipjs from "./unzipjs.js";
 
-const DEFAULT_RESPONSE = `
-WIP...`.trim();
-
-// https://microlink.io/user-agents
-const USER_AGENTS = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
-  "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:143.0) Gecko/20100101 Firefox/143.0",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
-];
+const DEFAULT_RESPONSE = `Use /hurricane.json`.trim();
 
 const kmlToJson = (string) => {
   const parser = new DOMParser();
@@ -40,7 +20,6 @@ const fetchKMZ = async (url) => {
 
   let unzip = new unzipjs();
   let unzipped = unzip.parse(arrayBuffer);
-
 
   for (let item of unzipped) {
     if (item.name.endsWith("kml")) {
@@ -59,6 +38,52 @@ const fetchKMZ = async (url) => {
   return finalItems;
 };
 
+const parseRSSFeed = async (feedURL) => {
+  const rssFeedData = await fetch(feedURL)
+    .then((res) => res.text())
+    .then((xmlText) => {
+      const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+      const result = parser.parse(xmlText);
+
+      const items = result?.rss?.channel?.item || [];
+      const parsedItems = Array.isArray(items) ? items : [items];
+
+      return parsedItems.filter((item) => item.link && (item.link.endsWith("kmz") || item.link.endsWith("kml")));
+    });
+
+  let allItems = {};
+  for (let i = 0; i < rssFeedData.length; i++) {
+    const item = rssFeedData[i];
+
+    if (item.link.endsWith("kml")) {
+      const rawKML = await fetch(item.link).then((res) => res.text());
+      const json = kmlToJson(rawKML);
+      const name = item.link.split("/").at(-1);
+
+      allItems[name] = json;
+    } else if (item.link.endsWith("kmz")) {
+      const data = await fetchKMZ(item.link);
+      Object.keys(data).forEach((fileName) => {
+        allItems[fileName] = data[fileName];
+      });
+    }
+  };
+
+  return allItems;
+};
+
+const parseMultipleRSSFeeds = async (feedURLs) => {
+  let allItems = {};
+
+  const multipleAllItems = await Promise.all(feedURLs.map((url) => parseRSSFeed(url)));
+
+  multipleAllItems.forEach((object) => {
+    Object.keys(object).forEach((key) => allItems[key] = object[key]);
+  });
+
+  return allItems;
+};
+
 export default {
   async fetch(request, env, ctx) {
     const timeGenerated = new Date().toISOString();
@@ -69,35 +94,11 @@ export default {
       if (request.url.endsWith("hurricane.json")) returnJSON = true;
       else return new Response(DEFAULT_RESPONSE);
 
-      const rssFeedData = await fetch("https://www.nhc.noaa.gov/gis-at.xml")
-        .then((res) => res.text())
-        .then((xmlText) => {
-          const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
-          const result = parser.parse(xmlText);
+      const allItems = await parseMultipleRSSFeeds([
+        "https://www.nhc.noaa.gov/gis-at.xml",
+        "https://www.nhc.noaa.gov/gis-ep.xml"
+      ]);
 
-          const items = result?.rss?.channel?.item || [];
-          const parsedItems = Array.isArray(items) ? items : [items];
-
-          return parsedItems.filter((item) => item.link && (item.link.endsWith("kmz") || item.link.endsWith("kml")));
-        });
-
-      let allItems = {};
-      for (let i = 0; i < rssFeedData.length; i++) {
-        const item = rssFeedData[i];
-
-        if (item.link.endsWith("kml")) {
-          const rawKML = await fetch(item.link).then((res) => res.text());
-          const json = kmlToJson(rawKML);
-          const name = item.link.split("/").at(-1);
-
-          allItems[name] = json;
-        } else if (item.link.endsWith("kmz")) {
-          const data = await fetchKMZ(item.link);
-          Object.keys(data).forEach((fileName) => {
-            allItems[fileName] = data[fileName];
-          });
-        }
-      }
       if (returnJSON) {
         let finalResponseObj = { timeGenerated, allItems, error: null, errorStack: null };
 
@@ -119,7 +120,7 @@ export default {
     } catch (e) {
       console.log(e);
       return Response.json(
-        { locations: [], specialHoursLocations: [], notOpenLocations: [], error: e.toString(), errorStack: e.stack },
+        { timeGenerated, allItems: {}, error: e.toString(), errorStack: e.stack },
         {
           headers: {
             "Content-Type": "application/json",
